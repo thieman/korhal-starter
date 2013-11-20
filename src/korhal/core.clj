@@ -1,22 +1,8 @@
 (ns korhal.core
   (:require [korhal.interop.interop :refer :all]
-            [korhal.strategy.engine :refer [start-strategy-engine! stop-strategy-engine!
-                                            strategy-inform! strategy-expire!
-                                            strategy-remove!]]
-            [korhal.macro.engine :refer [start-macro-engine! stop-macro-engine!]]
-            [korhal.macro.state :refer [builder-to-constructor!
-                                        construction-completed!]]
-            [korhal.micro.engine :refer [start-micro-engine! stop-micro-engine!
-                                         micro-tag-new-unit!]]
             [korhal.tools.util :refer [swap-key swap-keys profile]]
             [korhal.tools.repl :refer :all]
-            [korhal.tools.queue :refer :all]
-            [korhal.tools.contract :refer [available-minerals available-gas
-                                           contract-build contracted-max-supply
-                                           clear-contracts cancel-contracts
-                                           show-contract-display clear-contract-atoms
-                                           can-build? contract-add-initial-cc
-                                           contract-add-new-building]])
+            [korhal.tools.queue :refer :all])
   (:import (clojure.lang.IDeref)
            (jnibwapi.JNIBWAPI)
            (jnibwapi.BWAPIEventListener)))
@@ -49,31 +35,52 @@
   (println "Game Started")
   (enable-user-input)
   (set-game-speed 10)
-  (load-map-data true)
-  (draw-targets true)
-  (draw-ids true)
-  (show-contract-display true)
-  (start-repl! 7777))
+  (load-map-data true))
+
+(defn can-afford? [unit-kw]
+  (let [unit-type (get-unit-type (unit-type-kws unit-kw))]
+    (and (>= (my-minerals) (mineral-price unit-type))
+         (>= (my-gas) (gas-price unit-type))
+         (>= (- (my-supply-total) (my-supply-used))
+             (supply-required unit-type)))))
 
 (defn korhal-gameUpdate [this]
-  ;; we have to do this here instead of korhal-gameStarted because frame does not
-  ;; get reset to 0 until now when restarting a game
-  (when (zero? (frame-count))
-    (clear-contract-atoms)
-    (contract-add-initial-cc)
-    (start-strategy-engine!)
-    (start-macro-engine!)
-    (start-micro-engine!))
-  (strategy-expire! :nukes 250) ;; estimated frames for a nuke to drop
-  (clear-contracts)
-  (execute-api-queue)
-  (execute-repl-queue))
 
-(defn korhal-gameEnded [this]
-  (stop-strategy-engine!)
-  (stop-macro-engine!)
-  (stop-micro-engine!)
-  (stop-repl!))
+  ;; start mining
+  (doseq [drone (filter idle? (my-drones))]
+    (let [dist-to-drone (fn [mineral] (dist drone mineral))
+          closest-mineral (apply min-key dist-to-drone (minerals))]
+      (right-click drone closest-mineral)))
+
+  ;; build up to 6 drones
+  (when (and (can-afford? :drone)
+             (< (my-supply-used) 6))
+    (let [larva (first (my-larvae))]
+      (morph larva :drone)))
+
+  ;; build spawning pool with one of those drones
+  (when (and (can-afford? :spawning-pool)
+             (zero? (count (my-spawning-pools))))
+    (let [drone (first (filter completed? (my-drones)))
+          hatchery (first (my-hatcheries))
+          tx (if (< (tile-x hatchery) 40) (+ 5 (tile-x hatchery)) (- (tile-x hatchery) 5))
+          ty (tile-y hatchery)]
+      (build drone tx ty :spawning-pool)))
+
+  ;; build zerglings
+  (when (and (can-afford? :zergling)
+             (not (empty? (filter completed? (my-spawning-pools)))))
+    (let [larva (first (my-larvae))]
+      (morph larva :zergling)))
+
+  ;; rush the shit out of them
+  (let [enemy-base (first (enemy-start-locations))]
+    (doseq [zergling (filter idle? (my-zerglings))]
+      (attack zergling (pixel-x enemy-base) (pixel-y enemy-base))))
+
+  )
+
+(defn korhal-gameEnded [this])
 
 (defn korhal-keyPressed [this keycode])
 
@@ -82,62 +89,28 @@
 
 (defn korhal-receiveText [this text])
 
-(defn korhal-nukeDetect [this x y]
-  (strategy-inform! :nukes {:x x :y y :frame (frame-count)}))
+(defn korhal-nukeDetect [this x y])
 
 (defn korhal-playerLeft [this player-id])
 
-(defn korhal-unitCreate [this unit-id]
-  (let [unit (get-unit-by-id unit-id)]
-    (when (my-unit? unit)
-      (if (building? unit)
-        (do (builder-to-constructor! unit)
-            (contract-add-new-building unit))
-        (micro-tag-new-unit! unit)))))
+(defn korhal-unitCreate [this unit-id])
 
-(defn korhal-unitDestroy [this unit-id]
-  ;; NOTE: destroyed units are no longer available through the API
-  (cancel-contracts unit-id)
-  (strategy-remove! :enemy-units unit-id))
+(defn korhal-unitDestroy [this unit-id])
 
-(defn korhal-unitDiscover [this unit-id]
-  (let [unit (get-unit-by-id unit-id)]
-    (when (not (my-unit? unit))
-      (strategy-inform! :enemy-units {:id unit-id
-                                      :type (get-unit-type unit)
-                                      :x (pixel-x unit)
-                                      :y (pixel-y unit)
-                                      :frame (frame-count)}))))
+(defn korhal-unitDiscover [this unit-id])
 
 (defn korhal-unitEvade [this unit-id])
 
 (defn korhal-unitHide [this unit-id])
 
-(defn korhal-unitMorph [this unit-id]
-  (let [unit (get-unit-by-id unit-id)]
-    (when ((every-pred my-unit? is-refinery?) unit)
-      (builder-to-constructor! unit)
-      (contract-add-new-building unit))))
+(defn korhal-unitMorph [this unit-id])
 
-(defn korhal-unitShow [this unit-id]
-  (let [unit (get-unit-by-id unit-id)]
-    (when (not (my-unit? unit))
-      (strategy-inform! :enemy-units {:id unit-id
-                                      :type (get-unit-type unit)
-                                      :x (pixel-x unit)
-                                      :y (pixel-y unit)
-                                      :frame (frame-count)}))))
+(defn korhal-unitShow [this unit-id])
 
 (defn korhal-unitRenegade [this unit-id])
 
 (defn korhal-saveGame [this game-name])
 
-(defn korhal-unitComplete
-  "BUG: This does NOT get called when a morphing unit (e.g. refinery)
-  completes!"
-  [this unit-id]
-  (let [unit (get-unit-by-id unit-id)]
-    (when ((every-pred my-unit? building?) unit)
-      (construction-completed! unit))))
+(defn korhal-unitComplete [this unit-id])
 
 (defn korhal-playerDropped [this player-id])
