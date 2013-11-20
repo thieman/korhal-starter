@@ -1,0 +1,122 @@
+(ns korhal.core
+  (:require [korhal.interop.interop :refer :all]
+            [korhal.tools.util :refer [swap-key swap-keys profile]]
+            [korhal.tools.repl :refer :all]
+            [korhal.tools.queue :refer :all])
+  (:import (clojure.lang.IDeref)
+           (jnibwapi.JNIBWAPI)
+           (jnibwapi.BWAPIEventListener)))
+
+(gen-class
+ :name "korhal.core"
+ :implements [jnibwapi.BWAPIEventListener clojure.lang.IDeref]
+ :state state
+ :init init
+ :main true
+ :constructors {[] []}
+ :prefix "korhal-")
+
+(defn korhal-deref [this] @(.state this))
+
+(defn korhal-main [& args]
+  (let [ai (korhal.core.)
+        api (jnibwapi.JNIBWAPI. ai)]
+    (swap! (.state ai) swap-key :api api)
+    (bind-api! api)
+    (start)))
+
+(defn korhal-init []
+  [[] (atom {})])
+
+(defn korhal-connected [this]
+  (load-type-data))
+
+(defn korhal-gameStarted [this]
+  (println "Game Started")
+  (enable-user-input)
+  (set-game-speed 10)
+  (load-map-data true))
+
+(defn can-afford? [unit-kw]
+  (let [unit-type (get-unit-type (unit-kw unit-type-kws))]
+    (and (>= (my-minerals) (mineral-price unit-type))
+         (>= (my-gas) (gas-price unit-type))
+         (>= (- (my-supply-total) (my-supply-used)) (supply-required unit-type)))))
+
+(defn korhal-gameUpdate [this]
+
+  ;; mine with any idle drones we have
+  (let [hatchery (first (my-hatcheries))
+        mineral (apply min-key (partial dist hatchery) (minerals))]
+    (doseq [idle-drone (filter idle? (my-drones))]
+      (right-click idle-drone mineral)))
+
+  ;; build up to 6 drones
+  (when (and (<= (count (my-drones)) 5)
+             (zero? (count (my-eggs)))
+             (can-afford? :drone))
+    (when-let [larva (first (my-larvae))]
+      (morph larva :drone)))
+
+  ;; build a spawning pool
+  (when (and (zero? (count (my-spawning-pools)))
+             (can-afford? :spawning-pool))
+    (when-let [drone (first (my-drones))]
+      (let [hatchery (first (my-hatcheries))
+            dx (if (>= (tile-x hatchery) 40) -5 5)
+            tx (+ (tile-x hatchery) dx)
+            ty (tile-y hatchery)]
+        (build drone tx ty :spawning-pool))))
+
+  ;; then build 6 zerglings (3 commands)
+  (when (and (>= 6 (count (my-drones)))
+             (can-afford? :zergling))
+    (when-let [larva (first (my-larvae))]
+      (morph larva :zergling)))
+
+  ;; when we have built our initial rush, build an overlord
+  (when (and (= (my-supply-used) 9)
+             (zero? (count (my-eggs)))
+             (can-afford? :overlord))
+    (when-let [larva (first (my-larvae))]
+      (morph larva :overlord)))
+
+  ;; idle zerglings should attack the enemy base
+  (let [enemy-base (first (enemy-start-locations))]
+    (doseq [idle-zergling (filter idle? (my-zerglings))]
+      (attack idle-zergling (pixel-x enemy-base) (pixel-y enemy-base)))))
+
+(defn korhal-gameEnded [this])
+
+(defn korhal-keyPressed [this keycode])
+
+(defn korhal-matchEnded [this winner])
+(defn korhal-sendText [this text])
+
+(defn korhal-receiveText [this text])
+
+(defn korhal-nukeDetect [this x y])
+
+(defn korhal-playerLeft [this player-id])
+
+(defn korhal-unitCreate [this unit-id])
+
+(defn korhal-unitDestroy [this unit-id])
+
+(defn korhal-unitDiscover [this unit-id])
+
+(defn korhal-unitEvade [this unit-id])
+
+(defn korhal-unitHide [this unit-id])
+
+(defn korhal-unitMorph [this unit-id])
+
+(defn korhal-unitShow [this unit-id])
+
+(defn korhal-unitRenegade [this unit-id])
+
+(defn korhal-saveGame [this game-name])
+
+(defn korhal-unitComplete [this unit-id])
+
+(defn korhal-playerDropped [this player-id])
